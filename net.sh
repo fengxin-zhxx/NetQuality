@@ -1282,6 +1282,26 @@ fi
 done
 ((count%resu_per_line!=0))&&echo
 }
+# Select traditional traceroute when supported; older NextTrace versions
+# already default to it and do not recognize --traceroute.
+nexttrace_init_mode(){
+nexttrace_mode_args=()
+local help
+help=$(nexttrace --help 2>&1)
+if [[ $help == *"--traceroute"* ]];then
+nexttrace_mode_args=(--traceroute)
+fi
+}
+# Match actual hop rows rather than version-dependent trace headings.
+# Traditional RAW has pipe-delimited fields; detailed output uses whitespace.
+nexttrace_hop_rows(){
+awk -v mode="$1" '
+BEGIN { if (mode == "raw") FS = "[|]" }
+$1 ~ /^[0-9]+$/ && $1 + 0 > 0 && (mode != "raw" || NF >= 10) &&
+    ($2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ ||
+     ($2 ~ /:/ && $2 ~ /^[[:xdigit:].:]+$/)) { print }
+'
+}
 nexttrace_test(){
 local domain="$1"
 local rmode="$2"
@@ -1292,8 +1312,13 @@ local max_retries=10
 local retry_delay=5
 local retry_count=0
 while [[ $retry_count -lt $max_retries ]];do
-response=$(timeout -s SIGKILL 50 nexttrace -p 80 -q 8 -"$ipv" --"$rmode" --raw --psize 1400 "$domain" 2>/dev/null)
-[[ $response != *"*please try again later*"* && $response == *"traceroute to"* ]]&&break
+response=$(timeout -s SIGKILL 50 nexttrace "${nexttrace_mode_args[@]}" -p 80 -q 8 -"$ipv" --"$rmode" --raw --psize 1400 "$domain" 2>/dev/null)
+if [[ $response == *"please try again later"* ]];then
+response=""
+else
+response=$(nexttrace_hop_rows raw <<<"$response")
+[[ -n $response ]]&&break
+fi
 retry_count=$((retry_count+1))
 [[ $retry_count -lt $max_retries ]]&&sleep "$retry_delay"
 done
@@ -1555,6 +1580,8 @@ fi
 echo "$rnum $tresuww $tresucn"
 }
 get_route(){
+local -a nexttrace_mode_args=()
+nexttrace_init_mode
 ibar_step=19
 local temp_info="$Font_Cyan$Font_B${sinfo[route]}$Font_Suffix"
 ((ibar_step+=1))
@@ -1800,12 +1827,17 @@ local max_retries=10
 local retry_delay=5
 local retry_count=0
 while [[ $retry_count -lt $max_retries ]];do
-output=$(timeout -s SIGKILL 50 nexttrace -p 80 -q 8 -"$ipv" "$tmode" --psize 1400 "$domain" 2>/dev/null)
-[[ $output != *"*please try again later*"* && $output == *"traceroute to"* ]]&&break
+output=$(timeout -s SIGKILL 50 nexttrace "${nexttrace_mode_args[@]}" -p 80 -q 8 -"$ipv" "$tmode" --psize 1400 "$domain" 2>/dev/null)
+if [[ $output == *"please try again later"* ]];then
+output=""
+else
+output=$(echo "$output"|sed 's/\x1b\[[0-9;]*m//g')
+[[ -n $(nexttrace_hop_rows text <<<"$output") ]]&&break
+output=""
+fi
 retry_count=$((retry_count+1))
 [[ $retry_count -lt $max_retries ]]&&sleep "$retry_delay"
 done
-output=$(echo "$output"|sed 's/\x1b\[[0-9;]*m//g')
 echo "$output"|awk -v rnum="$rnum" '
     {
         if ($1 ~ /^[0-9]+$/) {
@@ -1842,6 +1874,8 @@ echo "$output"|awk -v rnum="$rnum" '
     }'
 }
 get_route_mode(){
+local -a nexttrace_mode_args=()
+nexttrace_init_mode
 ibar_step=19
 local temp_info="$Font_Cyan$Font_B${sinfo[moderoute]}$Font_Suffix"
 ((ibar_step+=1))
